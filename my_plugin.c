@@ -22,6 +22,7 @@
 */
 
 #include <string.h>
+#include <stdio.h>
 
 #include "hal.h"
 #include "motion_control.h"
@@ -44,22 +45,22 @@ typedef struct {
     float    pocket_1_x_pos;
     float    pocket_1_y_pos;
     char     origin;
-    uint16_t  tool_engagement_feed_rate;
+    uint16_t tool_engagement_feed_rate;
     uint16_t tool_pickup_rpm;
     uint16_t tool_dropoff_rpm;
-    uint8_t  tool_z_engagement;
-    uint8_t  tool_z_traverse;
-    uint8_t  tool_z_safe_clearance;
-    uint8_t  tool_z_retract;
-    uint8_t  tool_start_height;
+    uint16_t tool_z_engagement;
+    uint16_t tool_z_traverse;
+    uint16_t tool_z_safe_clearance;
+    float    tool_z_retract;
+    float    tool_start_height;
     bool     tool_setter;
     bool     tool_recognition;
     bool     dust_cover;
-    uint8_t  toolsetter_offset;
+    uint16_t toolsetter_offset;
     uint16_t toolsetter_seek_rate;
-    uint8_t  toolsetter_retreat;
+    uint16_t toolsetter_retreat;
     uint16_t toolsetter_feed_rate;
-    uint8_t  toolsetter_max_travel;
+    uint16_t toolsetter_max_travel;
     float    toolsetter_x_pos;
     float    toolsetter_y_pos;
     float    toolsetter_z_start_pos;
@@ -71,11 +72,14 @@ typedef struct {
     uint8_t  dust_cover_open_position;
     uint8_t  dust_cover_closed_position;
     uint8_t  dust_cover_output;
+    uint8_t  port;
 } plugin_settings_t;
 
 static volatile bool execute_posted = false;
 static volatile uint32_t spin_lock = 0;
 static nvs_address_t nvs_address;
+static uint8_t port, n_ports;
+static char max_port[4];
 static plugin_settings_t my_settings;
 static tool_data_t current_tool, *next_tool = NULL;
 static driver_reset_ptr driver_reset = NULL;
@@ -89,18 +93,18 @@ static const setting_group_detail_t user_groups [] = {
 static const setting_detail_t user_settings[] = {
     { 900, Group_UserSettings, "Alignment", "Axis", Format_RadioButtons, "X,Y", NULL, NULL, Setting_IsExtended, &my_settings.alignment, NULL, NULL },
     { 901, Group_UserSettings, "Direction", NULL, Format_RadioButtons, "Positive,Negative", NULL, NULL, Setting_IsExtended, &my_settings.direction, NULL, NULL },
-    { 902, Group_UserSettings, "Number of tool pockets", NULL, Format_Int8, "#0", "0", "7", Setting_IsExtended, &my_settings.number_of_pockets, NULL, NULL },
+    { 902, Group_UserSettings, "Number of tool pockets", NULL, Format_Int8, "#00", "0", "120", Setting_IsExtended, &my_settings.number_of_pockets, NULL, NULL },
     { 903, Group_UserSettings, "Pocket Offset", "mm", Format_Int16, "###0", "0", "3000", Setting_IsExtended, &my_settings.pocket_offset, NULL, NULL },
     { 904, Group_UserSettings, "Pocket 1 X Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_IsExtended, &my_settings.pocket_1_x_pos, NULL, NULL },
     { 905, Group_UserSettings, "Pocket 1 Y Position", "mm", Format_Decimal, "-###0.000", "-9999.999", "9999.999", Setting_IsExtended, &my_settings.pocket_1_y_pos, NULL, NULL },
-    { 906, Group_UserSettings, "Spindle Start Height", "mm", Format_Int8, "##0", "0", "255", Setting_IsExtended, &my_settings.tool_start_height, NULL, NULL },
-    { 907, Group_UserSettings, "Z Retract", "mm", Format_Int8, "##0", "0", "255", Setting_IsExtended, &my_settings.tool_z_retract, NULL, NULL },
+    { 906, Group_UserSettings, "Spindle Start Height", "mm", Format_Decimal, "-##0.000", "-999.999", "999.999", Setting_IsExtended, &my_settings.tool_start_height, NULL, NULL },
+    { 907, Group_UserSettings, "Z Retract", "mm", Format_Decimal, "-##0.000", "-127.000", "127.000", Setting_IsExtended, &my_settings.tool_z_retract, NULL, NULL },
     { 908, Group_UserSettings, "Tool Engagement Feed Rate", "mm/min", Format_Int16, "###0", "0", "3000", Setting_IsExtended, &my_settings.tool_engagement_feed_rate, NULL, NULL },
-    { 909, Group_UserSettings, "Tool Pickup RPM", "rpm", Format_Int16, "###0", "0", "7000", Setting_IsExtended, &my_settings.tool_pickup_rpm, NULL, NULL },
-    { 910, Group_UserSettings, "Tool Dropoff RPM", "rpm", Format_Int16, "###0", "0", "7000", Setting_IsExtended, &my_settings.tool_dropoff_rpm, NULL, NULL },
-    { 911, Group_UserSettings, "Tool Z Engage", "mm", Format_Int8, "-##0", "0", "255", Setting_IsExtended, &my_settings.tool_z_engagement, NULL, NULL },
-    { 912, Group_UserSettings, "Tool Z Traverse", "mm", Format_Int8, "-##0", "0", "255", Setting_IsExtended, &my_settings.tool_z_traverse, NULL, NULL },
-    { 913, Group_UserSettings, "Tool Z Safe Clearance", "mm", Format_Int8, "-##0", "0", "255", Setting_IsExtended, &my_settings.tool_z_safe_clearance, NULL, NULL },
+    { 909, Group_UserSettings, "Tool Pickup RPM", "rpm", Format_Int16, "###0", "0", "24000", Setting_IsExtended, &my_settings.tool_pickup_rpm, NULL, NULL },
+    { 910, Group_UserSettings, "Tool Dropoff RPM", "rpm", Format_Int16, "###0", "0", "24000", Setting_IsExtended, &my_settings.tool_dropoff_rpm, NULL, NULL },
+    { 911, Group_UserSettings, "Tool Z Engage", "mm", Format_Decimal, "-##0.000", "-120", "120", Setting_IsExtended, &my_settings.tool_z_engagement, NULL, NULL },
+    { 912, Group_UserSettings, "Tool Z Traverse", "mm", Format_Decimal, "-##0.000", "-120", "120", Setting_IsExtended, &my_settings.tool_z_traverse, NULL, NULL },
+    { 913, Group_UserSettings, "Tool Z Safe Clearance", "mm", Format_Decimal, "-##0.000", "-120", "120", Setting_IsExtended, &my_settings.tool_z_safe_clearance, NULL, NULL },
     { 914, Group_UserSettings, "Tool Setter", NULL, Format_RadioButtons, "Disabled, Enabled", NULL, NULL, Setting_IsExtended, &my_settings.tool_setter, NULL, NULL },
     { 915, Group_UserSettings, "Tool Recognition", NULL, Format_RadioButtons, "Disabled, Enabled", NULL, NULL, Setting_IsExtended, &my_settings.tool_recognition, NULL, NULL },
     { 916, Group_UserSettings, "Dust Cover", NULL, Format_RadioButtons, "Disabled, Enabled", NULL, NULL, Setting_IsExtended, &my_settings.dust_cover, NULL, NULL },
@@ -119,7 +123,9 @@ static const setting_detail_t user_settings[] = {
     { 929, Group_UserSettings, "Dust Cover Axis", NULL, Format_RadioButtons, "Use Output Pin,A-Axis,B-Axis,C-Axis", NULL, NULL, Setting_IsExtended, &my_settings.dust_cover_axis, NULL, NULL },
     { 930, Group_UserSettings, "Dust Cover Open Position", NULL, Format_Int8, "##0", "0", "250", Setting_IsExtended, &my_settings.dust_cover_open_position, NULL, NULL },
     { 931, Group_UserSettings, "Dust Cover Closed Position", NULL, Format_Int8, "##0", "0", "250", Setting_IsExtended, &my_settings.dust_cover_closed_position, NULL, NULL },
-    { 932, Group_UserSettings, "Dust Cover Output", NULL, Format_Int8, "##0", "0", "250", Setting_IsExtended, &my_settings.dust_cover_output, NULL, NULL }
+    { 932, Group_UserSettings, "Dust Cover Output", NULL, Format_Int8, "##0", "0", "250", Setting_IsExtended, &my_settings.dust_cover_output, NULL, NULL },
+    { 933, Group_UserSettings, "Embroidery trigger port", NULL, Format_Int8, "#0", "0", max_port, Setting_NonCore, &my_settings.port, NULL, is_setting_available, { .reboot_required = On } },
+
 };
 
 static const setting_descr_t user_descriptions[] = {
@@ -156,6 +162,7 @@ static const setting_descr_t user_descriptions[] = {
     { 930, "Value: A, B, or C Machine Coordinate (mm)\\n\\nThe position along the assigned axis at which the dust cover is fully open." },
     { 931, "Value: A, B, or C Machine Coordinate (mm)\\n\\nThe position along the assigned axis at which the dust cover is fully closed." },
     { 932, "Value: Output Number\\n\\nThe output pin designation for dust cover control. This is required to control the dust cover with a third-party microcontroller." },
+    { 933, "Testing" }
 };
 
 static setting_details_t setting_details = {
@@ -170,35 +177,26 @@ static setting_details_t setting_details = {
     .n_descriptions = sizeof(user_descriptions) / sizeof(setting_descr_t)
 };
 
-// Return X,Y based on tool number
-static coord_data_t get_tool_location(tool_data_t tool) {
-    coord_data_t target = {0};
-
-    memset(&target, 0, sizeof(coord_data_t)); // Zero plan_data struct
-
-    if(my_settings.alignment == 0) { // X Axis
-        if(my_settings.direction == 0) { // Positive
-            target.x = my_settings.pocket_1_x_pos + (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
-        } else {
-            target.x = my_settings.pocket_1_x_pos - (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
-        }
-        target.y = my_settings.pocket_1_y_pos;
-    } else {
-        if(my_settings.direction == 0) { // Positive
-            target.y = my_settings.pocket_1_y_pos + (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
-        } else {
-            target.y = my_settings.pocket_1_y_pos - (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
-        }
-        target.x = my_settings.pocket_1_x_pos;
-    }
-
-    return target;
-}
-
 // Write settings to non volatile storage (NVS).
 static void plugin_settings_save (void)
 {
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&my_settings, sizeof(plugin_settings_t), true);
+}
+
+static bool is_setting_available (const setting_detail_t *setting)
+{
+    bool ok = false;
+
+    switch(setting->id) {
+
+        case Setting_UserDefined_2:
+            ok = ioport_can_claim_explicit();
+            break;
+        default:
+            break;
+    }
+
+    return ok;
 }
 
 // Restore default settings and write to non volatile storage (NVS).
@@ -237,6 +235,7 @@ static void plugin_settings_restore (void)
     my_settings.dust_cover_open_position = 0;
     my_settings.dust_cover_closed_position = 0;
     my_settings.dust_cover_output = 0;
+    my_settings.port = 0;
 
     hal.nvs.memcpy_to_nvs(nvs_address, (uint8_t *)&my_settings, sizeof(plugin_settings_t), true);
 }
@@ -248,6 +247,30 @@ static void plugin_settings_load (void)
         plugin_settings_restore();
 }
 
+// Return X,Y based on tool number
+static coord_data_t get_tool_location(tool_data_t tool) {
+    coord_data_t target = {0};
+
+    memset(&target, 0, sizeof(coord_data_t)); // Zero plan_data struct
+
+    if(my_settings.alignment == 0) { // X Axis
+        if(my_settings.direction == 0) { // Positive
+            target.x = my_settings.pocket_1_x_pos + (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
+        } else {
+            target.x = my_settings.pocket_1_x_pos - (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
+        }
+        target.y = my_settings.pocket_1_y_pos;
+    } else {
+        if(my_settings.direction == 0) { // Positive
+            target.y = my_settings.pocket_1_y_pos + (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
+        } else {
+            target.y = my_settings.pocket_1_y_pos - (float) ((tool.tool_id - 1) * my_settings.pocket_offset );
+        }
+        target.x = my_settings.pocket_1_x_pos;
+    }
+
+    return target;
+}
 
 //     protocol_buffer_synchronize();
 
@@ -279,160 +302,111 @@ static void tool_select (tool_data_t *tool, bool next)
         memcpy(&current_tool, tool, sizeof(tool_data_t));
 }
 
-static void unloadSpindle( ) {
+static status_code_t spindle(bool load) {
 
+    debug_output(load ? "Loading" : "Unloading", NULL, NULL);
     coord_data_t target = {0}, current_pos;
     plan_line_data_t plan_data;
 
-    if(current_tool.tool_id == 0) {
-        return;
+    if(current_tool.tool_id == 0 && !load) {
+        debug_output("No tool to unload", NULL, NULL);
+        return Status_OK;
     }
 
     if(next_tool->tool_id > my_settings.number_of_pockets) {
-        manualToolUnLoad();
-        return;
+        debug_output("Tool number is larger than pocket. Manual Tool Change", NULL, NULL);
+        if(load) {
+            manualToolLoad();
+        } else {
+            manualToolUnLoad();
+        }
+        return Status_OK;
     }
 
     memset(&target, 0, sizeof(coord_data_t)); // Zero plan_data struct
     plan_data_init(&plan_data);
+
+    // Lets stop the spindle and set the feed rate for all moves.
     plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){0}, 0.0f);
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
+    plan_data.feed_rate = my_settings.tool_engagement_feed_rate;
+    plan_data.condition.rapid_motion = Off;
+
+
+    system_convert_array_steps_to_mpos(current_pos.values, sys.position);
+    debug_output("Getting Current POS", &current_pos, &plan_data);
 
     // Raise Z to safe clearance 
     target = current_pos;
     target.z = my_settings.tool_z_safe_clearance;
+    debug_output("Raising Z to Clearance Height", NULL, &plan_data);
     mc_line(target.values, &plan_data);
 
     // Get X,Y for current tool and move to that position
-    target = get_tool_location(current_tool);
+    target = get_tool_location((load?*next_tool:current_tool));
+    target.z = my_settings.tool_z_safe_clearance;
+    debug_output("Determine tool position and go there", &target, &plan_data);
+    mc_line(target.values, &plan_data);
+
+    target.z = my_settings.tool_start_height;
+    debug_output("Going to Spindle Start Height", &target, &plan_data);
     mc_line(target.values, &plan_data);
 
     // Turn on the spindle CCW
-    plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){ .on = On, .ccw = On }, my_settings.tool_dropoff_rpm);
-    plan_data.feed_rate = my_settings.tool_engagement_feed_rate;
-    plan_data.condition.rapid_motion = Off;
+    if(load) {
+        plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){ .on = On }, my_settings.tool_pickup_rpm);
+    } else {
+        plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){ .on = On, .ccw = On }, my_settings.tool_dropoff_rpm);
+    }
+
     // move to engagement height
     target.z = my_settings.tool_z_engagement;
+    debug_output("Turning on spindle and moving to engagement height", &target, &plan_data);
     mc_line(target.values, &plan_data);
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
 
     // Are we doing tool recognition
     if(my_settings.tool_recognition) {
+        debug_output("Tool Recognition Enabled", NULL, NULL);
         // Move spindle to zone 2
         target.z = my_settings.toolrecognition_detect_zone_2;
+        debug_output("Moving to zone 2", &target, &plan_data);
         mc_line(target.values, &plan_data);
         // Wait for spindle to be in the correct location
         protocol_buffer_synchronize();
         // IF the nut isn't all the way on lets try again
-        if(nutInTheWay()) {
+        if(laserBlocked()) {
             target.z = my_settings.tool_z_engagement;
+            debug_output("Detection Failed Trying again", NULL, NULL);
+
             mc_line(target.values, &plan_data);
             target.z = my_settings.toolrecognition_detect_zone_1;
             mc_line(target.values, &plan_data);
             protocol_buffer_synchronize();
-            // Second time failed 
-
         }
         
-        if(nutInTheWay()) {
-            // What to do if failed checking nut second time.
-            
+        if(laserBlocked()) {
+            // TODO: Need to error out.
+            return Status_GcodeInvalidTarget;
         }
 
         // Bring Spindle up and Turn off spindle
-        target.z = my_settings.tool_z_safe_clearance;
-        plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){0}, 0.0f);
-        mc_line(target.values, &plan_data); 
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
-
-    }
-    memset(&current_tool, 0, sizeof(tool_data_t));
-    protocol_buffer_synchronize();
-}
-
-static void loadSpindle() {
-    coord_data_t target = {0}, current_pos;
-    plan_line_data_t plan_data;
-
-    if(next_tool->tool_id == 0) {
-        return;
-    }
-
-    if(next_tool->tool_id > my_settings.number_of_pockets) {
-        manualToolLoad();
-        return;
-    }
-
-    system_convert_array_steps_to_mpos(current_pos.values, sys.position);
-
-    memset(&target, 0, sizeof(coord_data_t)); // Zero plan_data struct
-    plan_data_init(&plan_data);
-    plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){0}, 0.0f);
-    plan_data.feed_rate = my_settings.tool_engagement_feed_rate;
-
-    // Raise Z to safe clearance 
-    target.x = current_pos.x;
-    target.y = current_pos.y;
-    target.z = my_settings.tool_z_safe_clearance;
-    mc_line(target.values, &plan_data);
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
-    // Get X,Y for current tool and move to that position
-    target = get_tool_location(*next_tool);
-    mc_line(target.values, &plan_data);
-
-    // Turn on the spindle CW
-    plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t){ .on = On }, my_settings.tool_pickup_rpm);
-    plan_data.condition.rapid_motion = Off;
-    // move to engagement height
-    target.z = my_settings.tool_z_engagement;
-    mc_line(target.values, &plan_data);
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
-    // Are we doing tool recognition
-    if(my_settings.tool_recognition) {
-        // Move spindle to zone 2
-        target.z = my_settings.toolrecognition_detect_zone_1;
-        mc_line(target.values, &plan_data);
-        // Wait for spindle to be in the correct location
-        protocol_buffer_synchronize();
-        // IF the nut isn't all the way on lets try again
-        if(!nutInTheWay()) {
-            target.z = my_settings.tool_z_engagement;
-            mc_line(target.values, &plan_data);
-            target.z = my_settings.toolrecognition_detect_zone_1;
-            mc_line(target.values, &plan_data);
-            protocol_buffer_synchronize();
-            // Second time failed 
-
-        }
         
-        if(!nutInTheWay()) {
-            // What to do if failed checking nut second time.
-            
-        }
-
         target.z = my_settings.tool_z_safe_clearance;
+        plan_data.spindle.hal->set_state(plan_data.spindle.hal, (spindle_state_t)(spindle_state_t){ .on = Off }, 0.0f);
+        debug_output("Stopping spindle and raising to clearance height", &target, &plan_data);
         mc_line(target.values, &plan_data); 
+
+    }
+    debug_output("Updating current tool", NULL, NULL);
+    
+    if(load) {
+        memset(&current_tool, 0, sizeof(tool_data_t));
     } else {
-        target.z = my_settings.tool_z_safe_clearance;
-        mc_line(target.values, &plan_data);
+        memcpy(&current_tool, next_tool, sizeof(tool_data_t));
     }
 
-    
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
-    memcpy(&current_tool, next_tool, sizeof(tool_data_t));
     protocol_buffer_synchronize();
+
+    return Status_OK;
 
 }
 
@@ -445,11 +419,15 @@ static void manualToolUnLoad() {
 }
 
 static void measureTool() {
-    coord_data_t currentPos;
+    coord_data_t current_pos;
+
+    system_convert_array_steps_to_mpos(current_pos.values, sys.position);
+
 }
 
-static bool nutInTheWay() {
+static bool laserBlocked() {
 
+    return false;
 }
 
 // Start a tool change sequence. Called by gcode.c on a M6 command (via HAL).
@@ -468,65 +446,23 @@ static status_code_t tool_change (parser_state_t *parser_state)
         return Status_HomingRequired;
 #endif
 
-
     coord_data_t previous;
 
     // Save current position
     system_convert_array_steps_to_mpos(previous.values, sys.position);
 
+    debug_output("Turning off Coolant", NULL, NULL);
+
     // Stop spindle and coolant
     hal.coolant.set_state((coolant_state_t){0});
-    //hal.
-#ifdef DEBUG
-    mc_dwell(4.0f);
-#endif
-    unloadSpindle();
-    loadSpindle();
+    
+    debug_output("Check if we need to unload tool", NULL, NULL);
+    spindle(false);
+    debug_output("Check if we need to load a tool", NULL, NULL);
+    spindle(true);
+    debug_output("Check if we need to measure a tool", NULL, NULL);
     measureTool();
-
-    // plan_data.feed_rate = my_settings.tool_engagement_feed_rate;
-    // plan_data.condition.rapid_motion = On;
-
-    // target.z = my_settings.tool_z_safe_clearance;
-
-    // if(!atc_move(target, &plan_data))
-    //     return Status_Reset;
-
-    // // IF ToolID  > my_settings.pocketCount do a manual change other wise to auto change
-
-    // // Unload the current tool if loaded
-    // if(current_tool.tool_id != 0) {
-
-    //     target = get_tool_location(current_tool);
-
-    //     if(!atc_move(target, &plan_data))
-    //         return Status_Reset;
-
-    //     spindle_nut(&plan_data, my_settings.tool_z_traverse, true);
-    // }
-
-    // //Load the next tool
-    // if(next_tool->tool_id != 0) {
-
-    //     target = get_tool_location(*next_tool);
-        
-    //     if(!atc_move(target, &plan_data))
-    //         return Status_Reset;
-
-    //     spindle_nut(&plan_data, my_settings.tool_z_traverse, false);
-
-    //     memcpy(&current_tool, next_tool, sizeof(tool_data_t));
-    // }
-
-    //    // move out of nut, to tool clearance
-    // plan_data.condition.rapid_motion = On;
-    // target.z = my_settings.tool_z_safe_clearance;
-    // atc_move(target, &plan_data);
-
-
-    // target.z = 0.0;
-
-    // atc_move(previous, &plan_data);
+    
 
     return Status_OK;
 }
@@ -538,6 +474,11 @@ static void report_options (bool newopt)
     if(!newopt) {
         hal.stream.write("[PLUGIN: RapidChange ATC v0.01]" ASCII_EOL);
     }        
+}
+
+static void warning_mem (uint_fast16_t state)
+{
+    report_message("Embroidery plugin failed to initialize, no NVS storage for settings!", Message_Warning);
 }
 
 // Claim HAL tool change entry points and clear current tool offsets.
@@ -560,10 +501,53 @@ void my_plugin_init (void)
 
     if((nvs_address = nvs_alloc(sizeof(plugin_settings_t)))) {
          settings_register(&setting_details);
+    } else {
+        protocol_enqueue_rt_command(warning_mem);
     }
  
     if(driver_reset == NULL) {
         driver_reset = hal.driver_reset;
         hal.driver_reset = reset;
     }
+}
+
+void debug_output(char* message, coord_data_t *target, plan_line_data_t *pl_data) {
+
+#ifdef DEBUG
+    hal.stream.write("[R-ATC]: ");
+    hal.stream.write(message);
+    hal.stream.write(ASCII_EOL);
+
+    if(target != NULL) {
+        hal.stream.write(ASCII_EOL);
+        hal.stream.write("Target:" ASCII_EOL);
+        hal.stream.write("X: ");
+        hal.stream.write( ftoa(target->x, 3) );
+        hal.stream.write(ASCII_EOL);
+        hal.stream.write("y: ");
+        hal.stream.write( ftoa(target->y, 3) );
+        hal.stream.write(ASCII_EOL);
+        hal.stream.write("z: ");
+        hal.stream.write( ftoa(target->z, 3) );
+        hal.stream.write(ASCII_EOL);
+    }
+
+    if(pl_data != NULL) {
+        hal.stream.write(ASCII_EOL "Plan:" ASCII_EOL);
+        hal.stream.write("Feed Rate:");
+        hal.stream.write(ftoa(pl_data->feed_rate,3));
+        hal.stream.write(ASCII_EOL);
+        hal.stream.write("Spindle RPM:");
+        hal.stream.write(ftoa(pl_data->spindle.rpm,3));
+        hal.stream.write(ASCII_EOL);    
+        hal.stream.write("Spindle State:");
+        char buffer[8U] = ""; /*the output buffer*/ 
+        
+        sprintf (buffer, "%d", pl_data->spindle.state.value);    
+        hal.stream.write(buffer);
+        hal.stream.write(ASCII_EOL);
+
+        hal.stream.write(ASCII_EOL);
+    }
+#endif
 }
